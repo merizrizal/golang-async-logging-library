@@ -51,12 +51,12 @@ out:
 		case <-al.msgCh:
 			go func(ch <-chan string, wg *sync.WaitGroup) {
 				al.write(<-al.msgCh, wg)
-				wg.Done()
 			}(al.msgCh, wg)
 		case <-al.shutdownCh:
 			go func(ch <-chan struct{}, wg *sync.WaitGroup) {
 				al.shutdown()
-			}(al.shutdownCh, nil)
+				wg.Done()
+			}(al.shutdownCh, wg)
 			break out
 		}
 
@@ -74,14 +74,17 @@ func (al *Alog) formatMessage(msg string) string {
 
 func (al *Alog) write(msg string, wg *sync.WaitGroup) {
 	al.m.Lock()
-	defer al.m.Unlock()
+
+	defer func() {
+		al.m.Unlock()
+		wg.Done()
+	}()
 
 	_, err := al.Write(msg)
 	if err != nil {
 		go func(err error) {
 			al.errorCh <- err
 		}(err)
-
 	}
 }
 
@@ -105,9 +108,7 @@ func (al *Alog) ErrorChannel() <-chan error {
 // Stop shuts down the logger. It will wait for all pending messages to be written and then return.
 // The logger will no longer function after this method has been called.
 func (al *Alog) Stop() {
-	go func(ch <-chan struct{}) {
-		al.shutdownCh <- struct{}{}
-	}(al.shutdownCompleteCh)
+	al.shutdownCh <- <-al.shutdownCompleteCh
 }
 
 // Write synchronously sends the message to the log output
