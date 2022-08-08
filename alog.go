@@ -28,40 +28,56 @@ func New(w io.Writer) *Alog {
 	if w == nil {
 		w = os.Stdout
 	}
+
 	return &Alog{
-		dest: w,
+		m:       &sync.Mutex{},
+		dest:    w,
+		msgCh:   make(chan string),
+		errorCh: make(chan error),
 	}
 }
 
 // Start begins the message loop for the asynchronous logger. It should be initiated as a goroutine to prevent
 // the caller from being blocked.
-func (al Alog) Start() {
+func (al *Alog) Start() {
+	for {
+		go func(ch <-chan string, wg *sync.WaitGroup) {
+			al.write(<-ch, wg)
+		}(al.msgCh, nil)
+	}
 
 }
 
-func (al Alog) formatMessage(msg string) string {
+func (al *Alog) formatMessage(msg string) string {
 	if !strings.HasSuffix(msg, "\n") {
 		msg += "\n"
 	}
 	return fmt.Sprintf("[%v] - %v", time.Now().Format("2006-01-02 15:04:05"), msg)
 }
 
-func (al Alog) write(msg string, wg *sync.WaitGroup) {
+func (al *Alog) write(msg string, wg *sync.WaitGroup) {
+	_, err := al.Write(msg)
+	if err != nil {
+		go func(err error) {
+			al.errorCh <- err
+		}(err)
+
+	}
 }
 
 func (al Alog) shutdown() {
 }
 
 // MessageChannel returns a channel that accepts messages that should be written to the log.
-func (al Alog) MessageChannel() chan string {
-	return nil
+func (al *Alog) MessageChannel() chan<- string {
+	return al.msgCh
 }
 
 // ErrorChannel returns a channel that will be populated when an error is raised during a write operation.
 // This channel should always be monitored in some way to prevent deadlock goroutines from being generated
 // when errors occur.
-func (al Alog) ErrorChannel() chan error {
-	return nil
+func (al *Alog) ErrorChannel() <-chan error {
+	return al.errorCh
 }
 
 // Stop shuts down the logger. It will wait for all pending messages to be written and then return.
@@ -70,6 +86,9 @@ func (al Alog) Stop() {
 }
 
 // Write synchronously sends the message to the log output
-func (al Alog) Write(msg string) (int, error) {
-	return al.dest.Write([]byte(al.formatMessage(msg)))
+func (al *Alog) Write(msg string) (int, error) {
+	al.m.Lock()
+	defer al.m.Unlock()
+	n, ok := al.dest.Write([]byte(al.formatMessage(msg)))
+	return n, ok
 }
